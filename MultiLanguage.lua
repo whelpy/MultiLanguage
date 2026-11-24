@@ -90,6 +90,90 @@ local function SafeSetFrameSize(frame, width, height)
         pcall(function() frame:SetHeight(height) end)
     end
 end
+
+-- Language packs register a font that can draw their glyphs. The client font
+-- behind GameTooltipText and QuestFont only covers the client locale.
+local translationFonts = {}
+
+function MultiLanguage_SetLanguageFont(language, fonts)
+    if type(language) ~= "string" or type(fonts) ~= "table" or type(fonts.body) ~= "string" then
+        return
+    end
+
+    translationFonts[language] = {
+        body = fonts.body,
+        title = type(fonts.title) == "string" and fonts.title or fonts.body,
+    }
+end
+
+local originalFontSettings = setmetatable({}, { __mode = "k" })
+local appliedFontObjects = setmetatable({}, { __mode = "k" })
+local registeredFontObjects = {}
+local registeredFontObjectCount = 0
+
+-- GameTooltipText and QuestFont are font families for the client locale.
+-- SetFont on an inherited string keeps that family, so glyphs outside the
+-- client alphabet stay missing. A Font created here has one face.
+local function AcquireRegisteredFontObject(path, size, flags)
+    local key = path .. "\0" .. tostring(size) .. "\0" .. tostring(flags)
+    local cached = registeredFontObjects[key]
+    if cached then
+        return cached
+    end
+
+    registeredFontObjectCount = registeredFontObjectCount + 1
+    local fontObject = CreateFont("MultiLanguageRegisteredFont" .. registeredFontObjectCount)
+    if not fontObject:SetFont(path, size, flags) then
+        if flags == "" or not fontObject:SetFont(path, size, "") then
+            return nil
+        end
+    end
+
+    registeredFontObjects[key] = fontObject
+    return fontObject
+end
+
+local function ApplyTranslationFont(fontString, kind)
+    if not fontString then
+        return
+    end
+
+    local saved = originalFontSettings[fontString]
+    if not saved then
+        local _, size, flags = fontString:GetFont()
+        saved = {
+            size = size,
+            flags = flags or "",
+            fontObject = fontString:GetFontObject(),
+        }
+        originalFontSettings[fontString] = saved
+    end
+
+    local language = MultiLanguageOptions and MultiLanguageOptions.SELECTED_LANGUAGE
+    local registered = language and translationFonts[language]
+    if not registered then
+        local original = saved.fontObject
+        if original and appliedFontObjects[fontString] then
+            fontString:SetFontObject(original)
+            appliedFontObjects[fontString] = nil
+        end
+        return
+    end
+
+    local path = kind == "title" and registered.title or registered.body
+    if not path then
+        return
+    end
+
+    local fontObject = AcquireRegisteredFontObject(path, saved.size or 12, saved.flags)
+    if not fontObject or appliedFontObjects[fontString] == fontObject then
+        return
+    end
+
+    fontString:SetFontObject(fontObject)
+    appliedFontObjects[fontString] = fontObject
+end
+
 local textColorCodes = {
     ["[q]"] = "|cFFFFD100",
     ["[q0]"] = "|cFF9D9D9D",
@@ -234,6 +318,11 @@ end
 
 -- Quests functions
 local function SetQuestDetails(headerText, objectiveText, descriptionHeader, descriptionText, parentFrame, xOffset, yOffset, isQuestFrame)
+    ApplyTranslationFont(QuestTranslationFramePrimaryHeader, "title")
+    ApplyTranslationFont(QuestTranslationFrameSecondaryHeader, "title")
+    ApplyTranslationFont(QuestTranslationFramePrimaryText, "body")
+    ApplyTranslationFont(QuestTranslationFrameSecondaryText, "body")
+
     QuestTranslationFramePrimaryHeader:SetText(headerText:upper())
     QuestTranslationFramePrimaryText:SetText(objectiveText)
     QuestTranslationFrameSecondaryHeader:SetText(descriptionHeader:upper())
@@ -544,6 +633,11 @@ local function UpdateTranslationTooltipFrame(itemHeader, itemText, id, type)
     translationTooltipFrameWidth = gameToolTipWidth
     SafeSetFrameSize(TranslationTooltipFrame, translationTooltipFrameWidth, nil)
 
+    ApplyTranslationFont(TranslationTooltipFrameHeader, "body")
+    for _, line in ipairs(activeItemSpellOrUnitLines) do
+        ApplyTranslationFont(line, "body")
+    end
+
     TranslationTooltipFrameHeader:SetWidth(translationTooltipFrameWidth - 17.5)
     TranslationTooltipFrameHeader:Show()
     TranslationTooltipFrameHeader:SetPoint("TOPLEFT", 10, -10)
@@ -603,6 +697,7 @@ local function UpdateTranslationTooltipFrame(itemHeader, itemText, id, type)
                 else
                     lineFontString = TranslationTooltipFrame:CreateFontString(nil, "OVERLAY", "GameTooltipText")
                     table.insert(activeItemSpellOrUnitLines, lineFontString)
+                    ApplyTranslationFont(lineFontString, "body")
                 end
 
                 local firstWord, secondWord = line:match("{(.-)}%s-{(.-)}")
@@ -615,6 +710,7 @@ local function UpdateTranslationTooltipFrame(itemHeader, itemText, id, type)
                     else
                         secondFontString = TranslationTooltipFrame:CreateFontString(nil, "OVERLAY", "GameTooltipText")
                         table.insert(activeItemSpellOrUnitLines, secondFontString)
+                        ApplyTranslationFont(secondFontString, "body")
                     end
 
                     lineFontString:SetPoint(
